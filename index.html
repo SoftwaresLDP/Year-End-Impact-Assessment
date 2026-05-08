@@ -522,6 +522,20 @@
   .field-hint.loading::before { content: '⟳ '; display: inline-block; animation: spin 0.7s linear infinite; }
 
   /* Read-only mode for manager viewing employee side */
+  /* Demo banner — visible when previewing the reviewer side without a real review token */
+  .demo-banner { display: none; align-items: flex-start; gap: 12px; background: var(--info-light); border: 1px solid #C8D6E3; color: var(--info); border-radius: var(--radius-md); padding: 14px 18px; margin-bottom: 14px; animation: rise 0.3s var(--ease); }
+  body.demo-mode .demo-banner { display: flex; }
+  /* Role toggle card is only shown in submit mode (so people can preview the reviewer side
+     or fill the employee side). In manager mode, the original stacked layout is kept so
+     the manager can read the staff's submission while filling their own ratings. */
+  body:not(.mode-submit) #role-card { display: none !important; }
+  body:not(.mode-submit) .demo-banner { display: none !important; }
+  .demo-banner .db-icon { width: 24px; height: 24px; flex-shrink: 0; color: var(--info); margin-top: 1px; }
+  .demo-banner .db-icon svg { width: 100%; height: 100%; stroke: currentColor; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .demo-banner .db-title { font-size: 13.5px; font-weight: 600; margin-bottom: 4px; color: var(--info); }
+  .demo-banner .db-text { font-size: 12.5px; color: var(--text); line-height: 1.55; }
+  body.demo-mode #submit-btn { opacity: 0.5; cursor: not-allowed; }
+
   body.mode-manager .section.self-only input,
   body.mode-manager .section.self-only select,
   body.mode-manager .section.self-only textarea {
@@ -1025,6 +1039,45 @@
       <div class="sb-message" id="sb-message-text"></div>
     </div>
 
+    <!-- Demo banner (shown only when reviewer side is selected without an email token) -->
+    <div class="demo-banner" id="demo-banner" style="display:none;">
+      <div class="db-icon">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      </div>
+      <div class="db-body">
+        <div class="db-title">Preview only</div>
+        <div class="db-text">You are previewing the reviewer side. To actually review an employee, open the link emailed to you. Submission is disabled in this view.</div>
+      </div>
+    </div>
+
+    <!-- Role picker (toggle between sides) -->
+    <div class="card" id="role-card">
+      <div class="card-head">
+        <div class="num">★</div>
+        <div class="tx">
+          <h3>Choose what you'd like to view</h3>
+          <p id="role-card-sub">Switch between the employee side and the reviewer side. Real reviewer submissions require a unique link sent by email.</p>
+        </div>
+        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
+      </div>
+      <div class="role-bar">
+        <button type="button" class="role-btn active" data-role="self">
+          <span class="ric"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+          <div class="rc">
+            <div class="rt">Employee</div>
+            <div class="rd">Self-assessment — objectives and general feedback</div>
+          </div>
+        </button>
+        <button type="button" class="role-btn" data-role="manager">
+          <span class="ric"><svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z"/></svg></span>
+          <div class="rc">
+            <div class="rt">Reviewer / manager</div>
+            <div class="rd">Rate the employee against the ten weighted parameters</div>
+          </div>
+        </button>
+      </div>
+    </div>
+
     <!-- Employee info -->
     <div class="card">
       <div class="card-head">
@@ -1492,6 +1545,7 @@
 
   // --- Setup ---
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab, t)));
+  document.querySelectorAll('.role-btn').forEach(b => b.addEventListener('click', () => setRole(b.dataset.role)));
   document.getElementById('add-obj').addEventListener('click', () => addObjective());
   document.getElementById('submit-btn').addEventListener('click', submitForm);
   document.getElementById('export-btn').addEventListener('click', exportCSV);
@@ -1571,11 +1625,17 @@
     currentRole = role;
     document.body.classList.toggle('role-self',    role === 'self');
     document.body.classList.toggle('role-manager', role === 'manager');
+    document.querySelectorAll('.role-btn').forEach(b => b.classList.toggle('active', b.dataset.role === role));
     document.getElementById('self-section').style.display    = 'block'; // always render; read-only toggles via body class
     document.getElementById('manager-section').style.display = role === 'manager' ? 'block' : 'none';
     document.getElementById('reviewer-field').style.display  = role === 'manager' ? 'block' : 'none';
     document.getElementById('step3-lbl').textContent = role === 'self' ? 'Self-assessment' : 'Manager rating';
     document.getElementById('hero-desc').textContent = HERO_DESC[role] || HERO_DESC.self;
+
+    // Demo mode: reviewer side selected without a real review token. Banner appears,
+    // submit is visually disabled, real submission is blocked in submitForm().
+    const isDemo = role === 'manager' && currentMode === 'submit';
+    document.body.classList.toggle('demo-mode', isDemo);
 
     if (role !== 'manager') closeParamDetails();
     hideErrorBanner();
@@ -2226,6 +2286,14 @@
     const errorEl   = document.getElementById('msg-error');
     successEl.classList.remove('show');
     errorEl.classList.remove('show');
+
+    // Block submission when previewing the reviewer side without a real review token.
+    if (currentMode === 'submit' && currentRole === 'manager') {
+      const errTx = document.getElementById('msg-error-text');
+      errTx.textContent = 'Preview only — to actually review an employee, open the review link emailed to you. To submit a self-assessment, switch back to the Employee side.';
+      errorEl.classList.add('show');
+      return;
+    }
 
     // Validate
     document.querySelectorAll('.field.is-invalid').forEach(f => f.classList.remove('is-invalid'));
