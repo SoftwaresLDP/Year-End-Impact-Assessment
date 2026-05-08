@@ -535,6 +535,18 @@
   .demo-banner .db-title { font-size: 13.5px; font-weight: 600; margin-bottom: 4px; color: var(--info); }
   .demo-banner .db-text { font-size: 12.5px; color: var(--text); line-height: 1.55; }
   body.demo-mode #submit-btn { opacity: 0.5; cursor: not-allowed; }
+  /* Demo mode: reviewer side is visible but non-interactive — preview only */
+  body.demo-mode .section.manager-only input,
+  body.demo-mode .section.manager-only select,
+  body.demo-mode .section.manager-only textarea,
+  body.demo-mode .section.manager-only button:not(.param-name-btn),
+  body.demo-mode .section.manager-only .rating-btn { pointer-events: none; }
+  body.demo-mode .section.manager-only input,
+  body.demo-mode .section.manager-only select,
+  body.demo-mode .section.manager-only textarea { background: var(--surface-warm); color: var(--text2); }
+  body.demo-mode .section.manager-only { opacity: 0.85; }
+  /* Param popover (the click-to-open detail) stays interactive even in demo mode so users can explore */
+  body.demo-mode .param-name-btn { pointer-events: auto; cursor: pointer; }
 
   body.mode-manager .section.self-only input,
   body.mode-manager .section.self-only select,
@@ -1436,7 +1448,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';   
+  const VIEW_PASSWORD = 'Power@2026';   // ← change this to your desired password
   // ============================================================
 
   const PARAMS = [
@@ -1626,14 +1638,20 @@
     document.body.classList.toggle('role-self',    role === 'self');
     document.body.classList.toggle('role-manager', role === 'manager');
     document.querySelectorAll('.role-btn').forEach(b => b.classList.toggle('active', b.dataset.role === role));
-    document.getElementById('self-section').style.display    = 'block'; // always render; read-only toggles via body class
-    document.getElementById('manager-section').style.display = role === 'manager' ? 'block' : 'none';
+
+    // In manager mode (token URL), both sections are stacked together (current behavior).
+    // In submit mode (clean URL), only the role's own section is visible — toggle pattern.
+    const inManagerMode = currentMode === 'manager';
+    const showSelf = role === 'self' || inManagerMode;
+    const showMgr  = role === 'manager';
+    document.getElementById('self-section').style.display    = showSelf ? 'block' : 'none';
+    document.getElementById('manager-section').style.display = showMgr  ? 'block' : 'none';
     document.getElementById('reviewer-field').style.display  = role === 'manager' ? 'block' : 'none';
     document.getElementById('step3-lbl').textContent = role === 'self' ? 'Self-assessment' : 'Manager rating';
     document.getElementById('hero-desc').textContent = HERO_DESC[role] || HERO_DESC.self;
 
     // Demo mode: reviewer side selected without a real review token. Banner appears,
-    // submit is visually disabled, real submission is blocked in submitForm().
+    // reviewer side becomes non-interactive, submit is blocked in submitForm().
     const isDemo = role === 'manager' && currentMode === 'submit';
     document.body.classList.toggle('demo-mode', isDemo);
 
