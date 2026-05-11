@@ -989,6 +989,36 @@
     body { padding: 22px 12px 70px; }
     .resp-meta, .resp-tags { margin-left: 0; }
   }
+
+  /* ---------- Draft autosave (localStorage + server-side recovery) ---------- */
+  .draft-indicator {
+    display: none; align-items: center; gap: 8px;
+    padding: 7px 13px;
+    background: var(--gold-light); color: var(--gold);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+    margin-bottom: 12px;
+    animation: rise 0.3s var(--ease);
+  }
+  .draft-indicator.show { display: inline-flex; }
+  .draft-indicator svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+  .draft-discard { background: none; border: none; padding: 0 0 0 6px; color: currentColor; opacity: 0.7; cursor: pointer; text-decoration: underline; font-size: 11.5px; font-family: inherit; }
+  .draft-discard:hover { opacity: 1; }
+  .btn-save-later {
+    width: 100%; margin-top: 10px;
+    padding: 12px 20px; font-size: 13.5px; font-weight: 500;
+    background: var(--surface); border: 1px solid var(--border2); color: var(--text);
+    border-radius: var(--radius-sm); cursor: pointer; font-family: inherit;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.12s;
+  }
+  .btn-save-later:hover { background: var(--surface2); border-color: var(--border-strong); }
+  .btn-save-later svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .btn-save-later:disabled { opacity: 0.55; cursor: not-allowed; }
+  body:not(.mode-submit) .btn-save-later,
+  body:not(.mode-submit) .draft-indicator { display: none !important; }
+
 </style>
 </head>
 <body class="role-self">
@@ -1040,6 +1070,14 @@
         <span id="eb-title-text">Please complete the required fields.</span>
       </div>
       <ul class="eb-list" id="eb-list"></ul>
+    </div>
+
+
+    <!-- Draft autosave indicator (localStorage + server-side recovery) -->
+    <div class="draft-indicator" id="draft-indicator" role="status">
+      <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+      <span class="draft-text" id="draft-indicator-text">Draft autosaved</span>
+      <button type="button" class="draft-discard" id="draft-discard">Discard</button>
     </div>
 
     <!-- Send-back callout (shown only in edit view) -->
@@ -1304,6 +1342,11 @@
         <span id="submit-btn-label">Submit to manager</span>
       </button>
 
+      <button type="button" class="btn-save-later" id="save-later-btn">
+        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save for later &amp; email me a link
+      </button>
+
       <!-- Manager-only "Send back" button (appears in manager mode) -->
       <button type="button" class="btn-warn manager-only" id="send-back-btn" style="display:none; width:100%; margin-top:10px;">
         <svg viewBox="0 0 24 24"><path d="M3 10h18M3 14h18M7 7l-4 3 4 3M17 17l4-3-4-3"/></svg>
@@ -1448,7 +1491,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';   
+  const VIEW_PASSWORD = 'Power@2026';
   // ============================================================
 
   const PARAMS = [
@@ -1685,6 +1728,11 @@
       setBodyMode('submit');
       setRole('self');
       document.getElementById('submit-btn-label').textContent = 'Submit to manager';
+      // If a draft id is in the URL, load that draft from the server (overrides any localStorage draft).
+      // Otherwise, restore any local draft this browser has from a previous session.
+      const draftIdParam = getParam('draft');
+      if (draftIdParam) { await loadDraftFromServer(draftIdParam); }
+      else { restoreDraftLocal(); }
       return;
     }
 
@@ -2057,8 +2105,8 @@
     });
 
     block.querySelectorAll('.obj-select, .obj-other, .obj-status, .obj-comment').forEach(el => {
-      el.addEventListener('input', () => { block.classList.remove('is-invalid'); refreshErrorBannerIfVisible(); updateStepper(); });
-      el.addEventListener('change', () => { block.classList.remove('is-invalid'); refreshErrorBannerIfVisible(); updateStepper(); });
+      el.addEventListener('input', () => { block.classList.remove('is-invalid'); refreshErrorBannerIfVisible(); updateStepper(); scheduleSaveDraftLocal(); });
+      el.addEventListener('change', () => { block.classList.remove('is-invalid'); refreshErrorBannerIfVisible(); updateStepper(); scheduleSaveDraftLocal(); });
     });
     updateAddBtn();
     updateStepper();
@@ -2380,6 +2428,8 @@
       if (!json.success) throw new Error(json.error || 'Script returned failure');
 
       if (currentMode === 'submit') {
+        clearDraftLocal();
+        serverDraftId = null;
         // Switch to confirmation view
         showConfirmation(json.reviewId, payload.managerName, payload.managerEmail);
       } else if (currentMode === 'edit') {
@@ -2793,6 +2843,210 @@
     a.download = 'performance_reviews.csv';
     a.click();
   }
+
+  // ============================================================
+  // Draft autosave — localStorage (silent) + optional server-side draft (Save for later)
+  // ============================================================
+  const DRAFT_KEY = 'yer_review_draft_v1';
+  let serverDraftId = null;          // set when a draft was loaded from server via ?draft= or after Save for later
+  let draftDebounce = null;
+
+  function buildDraftSnapshot() {
+    return {
+      ts: Date.now(),
+      fields: {
+        fname:        (document.getElementById('fname')        || {}).value || '',
+        femail:       (document.getElementById('femail')       || {}).value || '',
+        fdept:        (document.getElementById('fdept')        || {}).value || '',
+        frole:        (document.getElementById('frole')        || {}).value || '',
+        fmgrname:     (document.getElementById('fmgrname')     || {}).value || '',
+        fmgremail:    (document.getElementById('fmgremail')    || {}).value || '',
+        qProblems:    (document.getElementById('qProblems')    || {}).value || '',
+        qTraining:    (document.getElementById('qTraining')    || {}).value || '',
+        qTeamHappy:   (document.getElementById('qTeamHappy')   || {}).value || '',
+        qConflicts:   (document.getElementById('qConflicts')   || {}).value || '',
+        qRecognition: (document.getElementById('qRecognition') || {}).value || '',
+        qLongTerm:    (document.getElementById('qLongTerm')    || {}).value || '',
+        qCareerScope: (document.getElementById('qCareerScope') || {}).value || '',
+        qOther:       (document.getElementById('qOther')       || {}).value || ''
+      },
+      objectives: Array.from(document.querySelectorAll('#objs-wrap .obj-block')).map(function (b) {
+        return {
+          select:  (b.querySelector('.obj-select')  || {}).value || '',
+          other:   (b.querySelector('.obj-other')   || {}).value || '',
+          status:  (b.querySelector('.obj-status')  || {}).value || '',
+          comment: (b.querySelector('.obj-comment') || {}).value || ''
+        };
+      })
+    };
+  }
+
+  function scheduleSaveDraftLocal() {
+    if (currentMode !== 'submit') return;
+    clearTimeout(draftDebounce);
+    draftDebounce = setTimeout(saveDraftLocal, 600);
+  }
+
+  function saveDraftLocal() {
+    if (currentMode !== 'submit') return;
+    try {
+      const snap = buildDraftSnapshot();
+      if (snapIsEmpty(snap)) return;     // don't save totally-blank drafts
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(snap));
+      showDraftIndicator(snap.ts, snap.fields.fname);
+    } catch (e) { /* localStorage may be blocked (private mode, quota) — fail silently */ }
+  }
+
+  function snapIsEmpty(snap) {
+    const f = snap.fields || {};
+    const anyField = Object.keys(f).some(function (k) { return String(f[k] || '').trim() !== ''; });
+    if (anyField) return false;
+    const anyObj = (snap.objectives || []).some(function (o) {
+      return ['select','other','status','comment'].some(function (k) { return String(o[k] || '').trim() !== ''; });
+    });
+    return !anyObj;
+  }
+
+  function restoreDraftLocal() {
+    if (currentMode !== 'submit') return false;
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return false;
+      const snap = JSON.parse(raw);
+      if (!snap || !snap.fields) return false;
+      applyDraftSnapshot(snap);
+      showDraftIndicator(snap.ts, snap.fields.fname);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function applyDraftSnapshot(snap) {
+    Object.keys(snap.fields || {}).forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.value = snap.fields[id] || '';
+    });
+    const wrap = document.getElementById('objs-wrap');
+    if (snap.objectives && snap.objectives.length && wrap) {
+      wrap.innerHTML = '';
+      objCount = 0;
+      snap.objectives.forEach(function (o) {
+        addObjective();
+        const blocks = document.querySelectorAll('#objs-wrap .obj-block');
+        const last = blocks[blocks.length - 1];
+        const sel = last.querySelector('.obj-select');
+        const other = last.querySelector('.obj-other');
+        if (o.select) {
+          sel.value = o.select;
+          if (o.select === '__other__' && o.other) { other.hidden = false; other.value = o.other; }
+        }
+        last.querySelector('.obj-status').value  = o.status  || '';
+        last.querySelector('.obj-comment').value = o.comment || '';
+      });
+    }
+    // Org lookup may need to rerun if email is prefilled
+    const emailEl = document.getElementById('femail');
+    if (emailEl && emailEl.value && typeof onEmailBlur === 'function') {
+      setTimeout(onEmailBlur, 50);
+    }
+    updateStepper();
+  }
+
+  function clearDraftLocal() {
+    try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+    const ind = document.getElementById('draft-indicator');
+    if (ind) ind.classList.remove('show');
+  }
+
+  function showDraftIndicator(ts, name) {
+    const ind = document.getElementById('draft-indicator');
+    if (!ind) return;
+    const text = document.getElementById('draft-indicator-text');
+    if (text) {
+      try {
+        const d = new Date(ts);
+        const fmt = d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+        const who = name && name.trim() ? (' for ' + name.trim()) : '';
+        text.textContent = 'Draft autosaved' + who + ' · ' + fmt;
+      } catch (e) {
+        text.textContent = 'Draft autosaved';
+      }
+    }
+    ind.classList.add('show');
+  }
+
+  // --- Server-side draft via the Save for later button ---
+  async function saveDraftServer() {
+    if (currentMode !== 'submit') return;
+    const username = (document.getElementById('femail').value || '').trim().toLowerCase();
+    if (!username || !/^[a-z0-9._]+$/.test(username)) {
+      alert('Please enter your email before saving a draft — we need it to email you the recovery link.');
+      document.getElementById('femail').focus();
+      return;
+    }
+    const email = username.replace(/\.+$/, '') + '@luckmans.com';
+    const name  = (document.getElementById('fname').value || '').trim();
+    const snap  = buildDraftSnapshot();
+    const btn   = document.getElementById('save-later-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="margin-right:0;"></span> Saving…';
+    try {
+      const res = await callScript({
+        method: 'POST',
+        body: JSON.stringify({ kind: 'draft_save', draftId: serverDraftId, email: email, name: name, payload: snap })
+      });
+      if (!res.success) throw new Error(res.error || 'Failed to save draft');
+      serverDraftId = res.draftId;
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> ' +
+        (res.isNew ? 'Draft saved · link sent to ' + email : 'Draft updated');
+      setTimeout(function () {
+        btn.disabled = false;
+        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save for later &amp; email me a link';
+      }, 3500);
+    } catch (err) {
+      alert('Could not save draft: ' + err.message);
+      btn.disabled = false;
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save for later &amp; email me a link';
+    }
+  }
+
+  async function loadDraftFromServer(draftId) {
+    try {
+      const res = await callScript({ method: 'GET' }, '?action=draft&id=' + encodeURIComponent(draftId));
+      if (!res.success) throw new Error(res.error);
+      serverDraftId = res.draft.draftId;
+      // The server snapshot is the same shape as our localStorage snapshot — its payload contains fields + objectives.
+      const snap = res.draft.payload || {};
+      applyDraftSnapshot(snap);
+      showDraftIndicator(Date.now(), snap.fields && snap.fields.fname);
+      return true;
+    } catch (err) {
+      console.error('Draft load failed:', err);
+      alert('Could not load draft: ' + err.message);
+      return false;
+    }
+  }
+
+  // Wire up auto-save on the top-level fields
+  ['fname','femail','fdept','frole','fmgrname','fmgremail',
+   'qProblems','qTraining','qTeamHappy','qConflicts','qRecognition','qLongTerm','qCareerScope','qOther'
+  ].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', scheduleSaveDraftLocal);
+  });
+
+  // Discard button
+  const discardBtn = document.getElementById('draft-discard');
+  if (discardBtn) discardBtn.addEventListener('click', function () {
+    if (confirm('Discard the saved draft and start fresh? This cannot be undone.')) {
+      clearDraftLocal();
+      serverDraftId = null;
+      location.href = location.origin + location.pathname;
+    }
+  });
+  // Save for later button
+  const saveLater = document.getElementById('save-later-btn');
+  if (saveLater) saveLater.addEventListener('click', saveDraftServer);
+
 </script>
 </body>
 </html>
