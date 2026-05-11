@@ -1491,7 +1491,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';  
+  const VIEW_PASSWORD = 'Power@2026';   
   // ============================================================
 
   const PARAMS = [
@@ -1585,6 +1585,9 @@
   const DRAFT_KEY = 'yer_review_draft_v1';
   let serverDraftId = null;
   let draftDebounce = null;
+  // Parameter side-panel state — hoisted because setRole() (called from routeView)
+  // invokes closeParamDetails() which reads this variable.
+  let openParamKey = null;
 
 
   async function callScript(opts, pathSuffix) {
@@ -1910,7 +1913,7 @@
   }
 
   // --- Parameter details (side panel on wide screens, inline expansion below) ---
-  let openParamKey = null;
+  // (openParamKey state moved to the top so the init sequence can reference it safely.)
 
   function isWide() { return window.matchMedia('(min-width: 1100px)').matches; }
 
