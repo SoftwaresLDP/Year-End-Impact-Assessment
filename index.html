@@ -1448,7 +1448,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';   // ← change this to your desired password
+  const VIEW_PASSWORD = 'Power@2026';   
   // ============================================================
 
   const PARAMS = [
@@ -1688,9 +1688,11 @@
       return;
     }
 
-    // Fetch the review from backend
+    // Fetch the review from backend. Pass `view` so the server can strip out
+    // reviewer-side data when the request is on behalf of an employee (status/edit views).
     try {
-      const res = await callScript({ method: 'GET' }, '?action=review&id=' + encodeURIComponent(reviewId));
+      const viewParam = view ? '&view=' + encodeURIComponent(view) : '';
+      const res = await callScript({ method: 'GET' }, '?action=review&id=' + encodeURIComponent(reviewId) + viewParam);
       if (!res.success) throw new Error(res.error || 'Review not found');
       currentReview = res.review;
     } catch (err) {
