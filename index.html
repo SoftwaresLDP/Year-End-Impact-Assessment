@@ -1491,7 +1491,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';
+  const VIEW_PASSWORD = 'Power@2026';  
   // ============================================================
 
   const PARAMS = [
@@ -1579,6 +1579,13 @@
   let currentMode = 'submit';   // submit | manager | status | edit | confirmation — hoisted so setup code can read it safely
   let currentReview = null;     // server review object (manager/status/edit views)
   let confirmationReviewId = null;
+  // Draft autosave state — declared at the top so the init sequence (routeView →
+  // restoreDraftLocal / loadDraftFromServer) can safely reference them before the
+  // rest of the draft module has executed.
+  const DRAFT_KEY = 'yer_review_draft_v1';
+  let serverDraftId = null;
+  let draftDebounce = null;
+
 
   async function callScript(opts, pathSuffix) {
     if (!SCRIPT_URL || SCRIPT_URL.indexOf('script.google.com') === -1) {
@@ -2847,9 +2854,7 @@
   // ============================================================
   // Draft autosave — localStorage (silent) + optional server-side draft (Save for later)
   // ============================================================
-  const DRAFT_KEY = 'yer_review_draft_v1';
-  let serverDraftId = null;          // set when a draft was loaded from server via ?draft= or after Save for later
-  let draftDebounce = null;
+  // (Draft state moved to the top so init code can use it safely.)
 
   function buildDraftSnapshot() {
     return {
