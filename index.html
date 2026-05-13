@@ -202,6 +202,12 @@
   }
   .field input, .field select { height: 42px; padding: 0 13px; }
   .field textarea { min-height: 74px; resize: vertical; padding: 10px 13px; }
+  /* Objective comment — starts compact like the Status select beside it, then auto-grows as the user types so long comments stay fully readable. */
+  .field textarea.obj-comment {
+    min-height: 42px; height: 42px;
+    padding: 10px 13px; line-height: 1.5;
+    resize: vertical; overflow: hidden;
+  }
   .field select {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239E9B96' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 13px center; padding-right: 34px;
@@ -1821,7 +1827,9 @@
           other.value = o.text;
         }
         b.querySelector('.obj-status').value  = o.status || '';
-        b.querySelector('.obj-comment').value = o.comment || '';
+        const cmtEl = b.querySelector('.obj-comment');
+        cmtEl.value = o.comment || '';
+        autoGrowComment(cmtEl);
       });
     }
     const setTA = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
@@ -2095,7 +2103,7 @@
         </div>
         <div class="field" style="margin:0;">
           <label>Comment</label>
-          <input type="text" class="obj-comment" placeholder="Brief supporting note" />
+          <textarea class="obj-comment" rows="1" placeholder="Brief supporting note"></textarea>
         </div>
       </div>
       <div class="obj-err">Please fill all three fields in this objective — or click Remove to discard it.</div>`;
@@ -2118,8 +2126,19 @@
       el.addEventListener('input', () => { block.classList.remove('is-invalid'); refreshErrorBannerIfVisible(); updateStepper(); scheduleSaveDraftLocal(); });
       el.addEventListener('change', () => { block.classList.remove('is-invalid'); refreshErrorBannerIfVisible(); updateStepper(); scheduleSaveDraftLocal(); });
     });
+    // Auto-grow the comment textarea on every keystroke so long entries stay fully visible.
+    const cmt = block.querySelector('.obj-comment');
+    if (cmt) cmt.addEventListener('input', () => autoGrowComment(cmt));
     updateAddBtn();
     updateStepper();
+  }
+
+  // Resize a comment textarea to match its content. Min 42px keeps it visually flush
+  // with the Status select beside it when empty.
+  function autoGrowComment(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.max(42, el.scrollHeight) + 'px';
   }
   function renumberObjectives() {
     const blocks = document.querySelectorAll('#objs-wrap .obj-block');
@@ -2948,7 +2967,9 @@
           if (o.select === '__other__' && o.other) { other.hidden = false; other.value = o.other; }
         }
         last.querySelector('.obj-status').value  = o.status  || '';
-        last.querySelector('.obj-comment').value = o.comment || '';
+        const lastCmt = last.querySelector('.obj-comment');
+        lastCmt.value = o.comment || '';
+        autoGrowComment(lastCmt);
       });
     }
     // Org lookup may need to rerun if email is prefilled
