@@ -1022,8 +1022,10 @@
   .btn-save-later:hover { background: var(--surface2); border-color: var(--border-strong); }
   .btn-save-later svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
   .btn-save-later:disabled { opacity: 0.55; cursor: not-allowed; }
-  body:not(.mode-submit) .btn-save-later,
-  body:not(.mode-submit) .draft-indicator { display: none !important; }
+  /* Save-for-later button + draft pill: visible in submit mode (employee) and manager
+     mode (reviewer). Hidden for status / edit / confirmation. */
+  body:not(.mode-submit):not(.mode-manager) .btn-save-later,
+  body:not(.mode-submit):not(.mode-manager) .draft-indicator { display: none !important; }
 
 </style>
 </head>
@@ -1497,7 +1499,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';   
+  const VIEW_PASSWORD = 'Power@2026';  
   // ============================================================
 
   const PARAMS = [
@@ -1591,6 +1593,12 @@
   const DRAFT_KEY = 'yer_review_draft_v1';
   let serverDraftId = null;
   let draftDebounce = null;
+  // Manager-side draft (reviewer's in-progress ratings). Distinct from the employee
+  // draft because (a) the storage key is per-reviewId, (b) save is to a different
+  // server action, (c) we never want this data to leak to the employee.
+  const MGR_DRAFT_KEY_PREFIX = 'yer_mgr_draft_v1__';
+  let mgrDraftLocalDebounce  = null;
+  let mgrDraftServerDebounce = null;
   // Parameter side-panel state — hoisted because setRole() (called from routeView)
   // invokes closeParamDetails() which reads this variable.
   let openParamKey = null;
@@ -1682,6 +1690,8 @@
       if (f) f.classList.remove('is-invalid');
       updateStepper();
       refreshErrorBannerIfVisible();
+      // Reviewer-name edits should snapshot the manager draft too.
+      if (id === 'freviewer') scheduleSaveManagerDraft();
     });
   });
 
@@ -1788,6 +1798,14 @@
     document.getElementById('submit-btn-label').textContent = 'Submit final review';
     document.getElementById('send-back-btn').style.display = 'inline-flex';
     document.getElementById('send-back-btn').style.width = '100%';
+    // Re-label the save-later button for the reviewer — no email needed since the
+    // manager already has the review link; we just persist the draft to the server.
+    const saveLaterBtn = document.getElementById('save-later-btn');
+    if (saveLaterBtn) {
+      saveLaterBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save my draft now';
+    }
+    // Restore the manager draft: prefer the server copy (cross-device), fall back to localStorage.
+    restoreManagerDraft(currentReview);
     // Notify backend the manager has opened the link (locks recall)
     try { await callScript({ method: 'POST', body: JSON.stringify({ kind: 'manager_opened', reviewId: currentReview.reviewId }) }); } catch (e) {}
   }
@@ -2204,6 +2222,7 @@
         validateJustification(key);
         updateStepper();
         refreshErrorBannerIfVisible();
+        scheduleSaveManagerDraft();
       });
     });
     wrap.querySelectorAll('.just-text').forEach(t => t.addEventListener('input', () => {
@@ -2211,6 +2230,7 @@
       const row = t.closest('.param-row');
       if (row) row.classList.remove('is-invalid');
       refreshErrorBannerIfVisible();
+      scheduleSaveManagerDraft();
     }));
   }
   function validateJustification(key) {
@@ -2379,6 +2399,29 @@
 
   // --- Submit ---
   async function submitForm() {
+    try { return await _submitForm(); }
+    catch (err) {
+      // Unhandled exception inside submitForm — surface it so we never get a
+      // silent "button does nothing" again. The visible alert is intentional:
+      // we want the reviewer to see something concrete, not just a console log.
+      console.error('submitForm threw:', err);
+      const errTx = document.getElementById('msg-error-text');
+      const errEl = document.getElementById('msg-error');
+      if (errTx && errEl) {
+        errTx.textContent = 'Submit failed: ' + (err && err.message ? err.message : String(err));
+        errEl.classList.add('show');
+      }
+      const btn = document.getElementById('submit-btn');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg> <span id="submit-btn-label">' +
+          (currentMode === 'submit' ? 'Submit to manager' :
+           currentMode === 'edit'   ? 'Resubmit to manager' : 'Submit final review') + '</span>';
+      }
+    }
+  }
+
+  async function _submitForm() {
     const successEl = document.getElementById('msg-success');
     const errorEl   = document.getElementById('msg-error');
     successEl.classList.remove('show');
@@ -2473,6 +2516,9 @@
         btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Submitted';
         btn.disabled = true;
         document.getElementById('send-back-btn').style.display = 'none';
+        // The draft is no longer relevant — clear our local copy. The server-side
+        // draft is cleared inside actManagerFinalize.
+        clearManagerDraftLocal(currentReview && currentReview.reviewId);
       }
     } catch (err) {
       console.error(err);
@@ -3063,18 +3109,198 @@
     if (el) el.addEventListener('input', scheduleSaveDraftLocal);
   });
 
-  // Discard button
+  // Discard button — clears the employee draft (the manager draft is reviewId-scoped
+  // and gets discarded automatically on finalize, so there's no UI for that yet).
   const discardBtn = document.getElementById('draft-discard');
   if (discardBtn) discardBtn.addEventListener('click', function () {
+    if (currentMode === 'manager') {
+      if (!confirm('Discard your in-progress review and start over? This cannot be undone.')) return;
+      const id = currentReview && currentReview.reviewId;
+      clearManagerDraftLocal(id);
+      // Wipe the server copy too by sending an empty manager payload.
+      if (id) {
+        callScript({ method: 'POST', body: JSON.stringify({
+          kind: 'manager_draft_save', reviewId: id, manager: {}
+        }) }).catch(function (e) { console.warn('Clear manager draft failed:', e); });
+      }
+      location.reload();
+      return;
+    }
     if (confirm('Discard the saved draft and start fresh? This cannot be undone.')) {
       clearDraftLocal();
       serverDraftId = null;
       location.href = location.origin + location.pathname;
     }
   });
-  // Save for later button
+  // Save for later button — branch by mode so the reviewer flow doesn't try to
+  // re-email a link they already have.
   const saveLater = document.getElementById('save-later-btn');
-  if (saveLater) saveLater.addEventListener('click', saveDraftServer);
+  if (saveLater) saveLater.addEventListener('click', function () {
+    if (currentMode === 'manager') return saveManagerDraftServerNow();
+    return saveDraftServer();
+  });
+
+  // ============================================================
+  // Manager-side draft autosave
+  // ============================================================
+  //
+  // Storage shape mirrors what we POST to the server:
+  //   { reviewerName, ratings: { <param-key>: { score, justification } }, _savedAt }
+  // localStorage key is per-reviewId so multiple reviews on the same browser
+  // never collide. The save guards on currentMode === 'manager' so calls from
+  // employee inputs (which still fire scheduleSaveManagerDraft from shared
+  // handlers) are no-ops.
+
+  function mgrDraftKey(reviewId) {
+    return MGR_DRAFT_KEY_PREFIX + String(reviewId || '');
+  }
+
+  function buildManagerDraftSnapshot() {
+    const ratingsOut = {};
+    PARAMS.forEach(function (p) {
+      const score = ratings[p.key];
+      const taEl  = document.querySelector('.just-text[data-key="' + p.key + '"]');
+      const just  = taEl ? taEl.value.trim() : '';
+      // Only persist a parameter if it has any signal — keeps the snapshot small
+      // and avoids serialising fully-empty rating rows.
+      if (score || just) ratingsOut[p.key] = { score: score || 0, justification: just };
+    });
+    const rvEl = document.getElementById('freviewer');
+    return {
+      reviewerName: rvEl ? rvEl.value.trim() : '',
+      ratings:      ratingsOut,
+      _savedAt:     Date.now()
+    };
+  }
+
+  function mgrDraftIsEmpty(snap) {
+    if (snap.reviewerName && snap.reviewerName.trim()) return false;
+    return Object.keys(snap.ratings || {}).length === 0;
+  }
+
+  function applyManagerDraftSnapshot(snap) {
+    if (!snap) return;
+    // Reviewer name
+    if (typeof snap.reviewerName === 'string') {
+      const rv = document.getElementById('freviewer');
+      if (rv && !rv.value.trim()) rv.value = snap.reviewerName;
+    }
+    // Ratings + justifications
+    if (snap.ratings && typeof snap.ratings === 'object') {
+      Object.keys(snap.ratings).forEach(function (k) {
+        const r = snap.ratings[k] || {};
+        const score = Number(r.score) || 0;
+        if (score >= 1 && score <= 5) {
+          ratings[k] = score;
+          document.querySelectorAll('.rating-btn[data-key="' + k + '"]').forEach(function (b) {
+            b.classList.toggle('active', Number(b.dataset.val) === score);
+          });
+        }
+        if (typeof r.justification === 'string') {
+          const ta = document.querySelector('.just-text[data-key="' + k + '"]');
+          if (ta && !ta.value.trim()) ta.value = r.justification;
+        }
+      });
+      updateOverall();
+      updateStepper();
+    }
+  }
+
+  function saveManagerDraftLocal() {
+    if (currentMode !== 'manager') return;
+    if (!currentReview || !currentReview.reviewId) return;
+    try {
+      const snap = buildManagerDraftSnapshot();
+      if (mgrDraftIsEmpty(snap)) return;
+      localStorage.setItem(mgrDraftKey(currentReview.reviewId), JSON.stringify(snap));
+      showDraftIndicator(snap._savedAt, currentReview.employeeName);
+    } catch (e) { /* localStorage blocked — fail quiet */ }
+  }
+
+  function scheduleSaveManagerDraft() {
+    if (currentMode !== 'manager') return;
+    clearTimeout(mgrDraftLocalDebounce);
+    mgrDraftLocalDebounce = setTimeout(saveManagerDraftLocal, 500);
+    // Server save runs less aggressively so we don't hammer Apps Script.
+    clearTimeout(mgrDraftServerDebounce);
+    mgrDraftServerDebounce = setTimeout(saveManagerDraftServer, 3500);
+  }
+
+  function restoreManagerDraftLocal(reviewId) {
+    if (!reviewId) return false;
+    try {
+      const raw = localStorage.getItem(mgrDraftKey(reviewId));
+      if (!raw) return false;
+      const snap = JSON.parse(raw);
+      if (!snap) return false;
+      applyManagerDraftSnapshot(snap);
+      showDraftIndicator(snap._savedAt || Date.now(), currentReview && currentReview.employeeName);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function clearManagerDraftLocal(reviewId) {
+    if (!reviewId) return;
+    try { localStorage.removeItem(mgrDraftKey(reviewId)); } catch (e) {}
+    const ind = document.getElementById('draft-indicator');
+    if (ind) ind.classList.remove('show');
+  }
+
+  // Restore on manager-mode entry: server copy wins, localStorage is the fallback.
+  function restoreManagerDraft(review) {
+    if (!review) return;
+    if (review.managerDraft && (review.managerDraft.reviewerName || review.managerDraft.ratings)) {
+      applyManagerDraftSnapshot(review.managerDraft);
+      showDraftIndicator(review.managerDraft._savedAt || Date.now(), review.employeeName);
+      return;
+    }
+    restoreManagerDraftLocal(review.reviewId);
+  }
+
+  // Background autosave to the server. Silent on success; failures only logged.
+  async function saveManagerDraftServer() {
+    if (currentMode !== 'manager') return;
+    if (!currentReview || !currentReview.reviewId) return;
+    const snap = buildManagerDraftSnapshot();
+    if (mgrDraftIsEmpty(snap)) return;
+    try {
+      await callScript({ method: 'POST', body: JSON.stringify({
+        kind: 'manager_draft_save',
+        reviewId: currentReview.reviewId,
+        manager: snap
+      }) });
+    } catch (err) { console.warn('Manager draft server save failed:', err); }
+  }
+
+  // Manual "Save my draft now" — same payload as the autosave, but with button feedback.
+  async function saveManagerDraftServerNow() {
+    if (currentMode !== 'manager') return;
+    if (!currentReview || !currentReview.reviewId) return;
+    const btn = document.getElementById('save-later-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="margin-right:0;"></span> Saving…';
+    const snap = buildManagerDraftSnapshot();
+    try {
+      const res = await callScript({ method: 'POST', body: JSON.stringify({
+        kind: 'manager_draft_save',
+        reviewId: currentReview.reviewId,
+        manager: snap
+      }) });
+      if (!res.success) throw new Error(res.error || 'Failed to save draft');
+      // Mirror to localStorage so the same browser sees it on refresh too.
+      try { localStorage.setItem(mgrDraftKey(currentReview.reviewId), JSON.stringify(snap)); } catch (e) {}
+      showDraftIndicator(snap._savedAt, currentReview.employeeName);
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Draft saved';
+      setTimeout(function () {
+        btn.disabled = false;
+        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save my draft now';
+      }, 2500);
+    } catch (err) {
+      alert('Could not save draft: ' + (err && err.message ? err.message : err));
+      btn.disabled = false;
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save my draft now';
+    }
+  }
 
 </script>
 </body>
