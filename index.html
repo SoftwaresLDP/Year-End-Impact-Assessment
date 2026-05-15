@@ -584,6 +584,19 @@
   body.mode-confirmation .error-banner,
   body.mode-confirmation .stepper,
   body.mode-confirmation .sendback-callout { display: none !important; }
+  /* Manager-blocked: review cannot be finalised (recalled / sent_back / complete). */
+  body.mode-mgr-blocked .section,
+  body.mode-mgr-blocked .card:not(#mgr-blocked-card),
+  body.mode-mgr-blocked #submit-btn,
+  body.mode-mgr-blocked .btn-save-later,
+  body.mode-mgr-blocked .draft-indicator,
+  body.mode-mgr-blocked #send-back-btn,
+  body.mode-mgr-blocked #msg-success,
+  body.mode-mgr-blocked #msg-error,
+  body.mode-mgr-blocked .error-banner,
+  body.mode-mgr-blocked .stepper,
+  body.mode-mgr-blocked .sendback-callout,
+  body.mode-mgr-blocked .role-toggle { display: none !important; }
 
   /* ---------- Send-back callout (edit view) ---------- */
   .sendback-callout {
@@ -1388,6 +1401,22 @@
       </div>
     </div>
 
+    <!-- Manager-blocked view (shown when the manager opens a link whose review is
+         no longer finalisable: recalled by employee, already finalised, or already
+         sent back. Prevents the manager from wasting time filling out a form that
+         can't be submitted, and explains why.) -->
+    <div class="card" id="mgr-blocked-card" style="display:none;">
+      <div class="conf-ic" id="mgr-blocked-ic">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+      </div>
+      <h2 id="mgr-blocked-title">This review can't be finalised</h2>
+      <div class="conf-sub" id="mgr-blocked-msg">—</div>
+      <div class="conf-link-box" id="mgr-blocked-meta-box" style="display:none;">
+        <div class="cl-label">Employee</div>
+        <div class="cl-url" id="mgr-blocked-emp">—</div>
+      </div>
+    </div>
+
     <!-- Status view (when ?view=status) -->
     <div class="card" id="status-card" style="display:none;">
       <div class="status-badge" data-s="pending_manager" id="status-badge"><span id="status-badge-text">—</span></div>
@@ -1499,7 +1528,7 @@
 <script>
   // ============================================================
   const SCRIPT_URL    = 'https://script.google.com/macros/s/AKfycbxM9OkZIORL1eiIejU5Bdoij9b4A-mnMyhP9XzJwXW4k_7Gq9Vq6Sqo70c6rgcx-2D_/exec';
-  const VIEW_PASSWORD = 'Power@2026';  
+  const VIEW_PASSWORD = 'Power@2026';   
   // ============================================================
 
   const PARAMS = [
@@ -1740,7 +1769,7 @@
   }
 
   function setBodyMode(mode) {
-    document.body.classList.remove('mode-submit','mode-manager','mode-status','mode-edit','mode-confirmation');
+    document.body.classList.remove('mode-submit','mode-manager','mode-status','mode-edit','mode-confirmation','mode-mgr-blocked');
     document.body.classList.add('mode-' + mode);
     currentMode = mode;
   }
@@ -1788,6 +1817,15 @@
       prefillSelf(currentReview);
       showSendBackCallout(currentReview);
       document.getElementById('submit-btn-label').textContent = 'Resubmit to manager';
+      return;
+    }
+    // Manager URL but the review is in a terminal/non-finalisable state.
+    // Show a clear info card instead of an editable form so the manager doesn't
+    // waste time filling out something the server will reject on submit.
+    if (currentReview && (currentReview.status === 'recalled' ||
+                          currentReview.status === 'complete' ||
+                          currentReview.status === 'sent_back')) {
+      renderManagerBlocked(currentReview);
       return;
     }
     // Default: manager mode
@@ -1888,6 +1926,49 @@
     if (!review.sendBackMessage) return;
     document.getElementById('sendback-callout').style.display = 'block';
     document.getElementById('sb-message-text').textContent = review.sendBackMessage;
+  }
+
+  // Render a friendly read-only screen when the manager URL is opened but the
+  // review is no longer finalisable. Distinct messages per terminal status so
+  // the manager knows whether to wait, ignore the link, or do nothing.
+  function renderManagerBlocked(review) {
+    setBodyMode('mgr-blocked');
+    const titleEl = document.getElementById('mgr-blocked-title');
+    const msgEl   = document.getElementById('mgr-blocked-msg');
+    const iconEl  = document.getElementById('mgr-blocked-ic');
+    const metaBox = document.getElementById('mgr-blocked-meta-box');
+    const empEl   = document.getElementById('mgr-blocked-emp');
+
+    const empLine = (review.employeeName || '') +
+                    (review.employeeEmail ? ' · ' + review.employeeEmail : '');
+    if (empLine.trim()) { empEl.textContent = empLine; metaBox.style.display = 'block'; }
+
+    if (review.status === 'recalled') {
+      titleEl.textContent = 'Review was recalled';
+      msgEl.innerHTML = 'The employee withdrew this review before it was opened. ' +
+        'Nothing for you to do — when they resubmit, you\'ll receive a fresh notification ' +
+        'with a new link. You can safely close this tab.';
+      iconEl.style.background = 'var(--warn-light)';
+      iconEl.style.color = 'var(--warn)';
+    } else if (review.status === 'sent_back') {
+      titleEl.textContent = 'Already sent back to employee';
+      msgEl.innerHTML = 'You sent this review back to ' +
+        '<strong>' + (review.employeeName || 'the employee') + '</strong> for rectification. ' +
+        'Once they resubmit, you\'ll be notified by email with a refreshed link.';
+      iconEl.style.background = 'var(--surface-warm)';
+      iconEl.style.color = 'var(--text2)';
+    } else if (review.status === 'complete') {
+      titleEl.textContent = 'Review already finalised';
+      msgEl.innerHTML = 'This review has already been submitted. ' +
+        'No further action is needed from you.';
+      iconEl.style.background = 'var(--accent-light, var(--surface-warm))';
+      iconEl.style.color = 'var(--accent)';
+    } else {
+      titleEl.textContent = 'This review can\'t be finalised';
+      msgEl.textContent = 'Current status: ' + review.status + '. Please contact HR if you expected to be able to finalise this review.';
+    }
+    document.getElementById('mgr-blocked-card').style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   // ============================================================
